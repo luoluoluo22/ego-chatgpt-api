@@ -18,19 +18,52 @@
 
 ---
 
-## 🚀 快速启动
+## 🚀 快速启动与停止
 
 ### 前置要求
 - 已安装 **ego-browser** (Citro Labs) 并处于已登录 ChatGPT 状态。
 - Windows 环境（PowerShell 5.1+）。
 
-### 方式一：PowerShell 启动
-```powershell
-powershell -ExecutionPolicy Bypass -File .\start-server.ps1
-```
+### 启动服务
+- **方式一（推荐）**：双击工程根目录下的 `start.bat`。
+- **方式二（PowerShell）**：
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\start-server.ps1
+  ```
 
-### 方式二：双击批处理启动
-直接双击运行工程根目录下的 `start.bat`。
+### 停止服务
+- **双击批处理**：直接运行 `stop.bat`。
+- **PowerShell**：
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File .\stop-server.ps1
+  ```
+
+---
+
+## 🔄 双电脑代码双向同步 (Git Sync)
+
+本项目内置 Git 双向同步套件，方便在主开发电脑与此电脑之间保持最新代码同步。
+
+### 1. 临时要求马上推送 / 立即同步 (On-Demand)
+当你修改了代码希望主电脑立刻收到，或者想立刻拉取主电脑推送的代码：
+- **方式一**：双击运行 **`sync-now.bat`**。
+- **方式二**：命令行运行：
+  ```powershell
+  npm run sync
+  # 或 powershell -ExecutionPolicy Bypass -File .\sync.ps1 -Now
+  ```
+
+### 2. 启动 30 分钟定时自动同步守护 (Daemon)
+- **方式一**：双击运行 **`start-sync-timer.bat`**。
+- **方式二**：命令行运行：
+  ```powershell
+  npm run sync:watch
+  # 或 powershell -ExecutionPolicy Bypass -File .\sync.ps1 -Daemon -IntervalMinutes 30
+  ```
+- **工作机制**：
+  - 每隔 30 分钟自动检查本地修改并提交；
+  - 采用 `git pull --rebase` 拉取 GitHub 远端代码，保持提交记录整洁平直；
+  - 自动推送本地提交至 GitHub。
 
 ---
 
