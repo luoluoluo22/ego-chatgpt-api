@@ -1,0 +1,21 @@
+{
+  "name": "ego-chatgpt-api",
+  "version": "1.0.0",
+  "description": "基于 ego-browser 真实 Chromium 会话的原生免封控 ChatGPT OpenAI 兼容 API 桥接服务",
+  "main": "server.mjs",
+  "type": "module",
+  "scripts": {
+    "start": "powershell -ExecutionPolicy Bypass -File ./start-server.ps1",
+    "test": "node ./test-api.mjs"
+  },
+  "keywords": [
+    "chatgpt",
+    "openai",
+    "ego-browser",
+    "api-bridge",
+    "anti-cloudflare",
+    "stream-sse"
+  ],
+  "author": "luoluoluo22 <1137583371@qq.com>",
+  "license": "MIT"
+}

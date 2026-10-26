@@ -1,0 +1,12 @@
+# Logs
+*.log
+server.log
+
+# Node & OS
+node_modules/
+.DS_Store
+Thumbs.db
+
+# Ego state & temp
+.ego-browser/
+*.tmp
