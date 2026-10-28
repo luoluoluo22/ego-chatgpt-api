@@ -1,4 +1,4 @@
-﻿param(
+param(
     [switch]$Now,
     [switch]$Daemon,
     [int]$IntervalMinutes = 30,
@@ -65,6 +65,20 @@ function Invoke-GitSync {
         }
     } else {
         Write-ColorLog "Local branch is up to date with GitHub, no push needed." "DarkGray"
+    }
+
+    # 同步推送至 Gitee
+    $unpushedGitee = git log "gitee/$branch..$branch" --oneline 2>$null
+    if ($unpushedGitee) {
+        Write-ColorLog "Unpushed commits found for Gitee, pushing (git push gitee $branch)..." "Cyan"
+        $pushGiteeOut = git push gitee $branch 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-ColorLog "[WARN] Push to Gitee had issue: $pushGiteeOut" "Yellow"
+        } else {
+            Write-ColorLog "Successfully pushed latest code to Gitee!" "Green"
+        }
+    } else {
+        Write-ColorLog "Local branch is up to date with Gitee, no push needed." "DarkGray"
     }
 
     Write-ColorLog "=== Sync Complete ===`n" "Green"

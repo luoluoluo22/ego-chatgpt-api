@@ -357,8 +357,8 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 6.3 音频文件下载与流式直链代理 (GET /v1/suno/download/:id 或 ?id=...)
-  if (req.method === "GET" && (url.pathname.startsWith("/v1/suno/download") || url.pathname.startsWith("/api/download"))) {
+  // 6.3 音频文件下载与流式直链代理 (GET/HEAD /v1/suno/download/:id 或 ?id=...)
+  if ((req.method === "GET" || req.method === "HEAD") && (url.pathname.startsWith("/v1/suno/download") || url.pathname.startsWith("/api/download"))) {
     let clipId = url.searchParams.get("id") || "";
     if (!clipId) {
       const parts = url.pathname.split("/").filter(Boolean);
@@ -388,19 +388,37 @@ const server = http.createServer(async (req, res) => {
           "Content-Disposition": `attachment; filename="${encodeURIComponent(matchedFile)}"`,
           "Cache-Control": "public, max-age=86400"
         });
+        if (req.method === "HEAD") {
+          res.end();
+          return;
+        }
         fs.createReadStream(filePath).pipe(res);
         return;
       }
 
       // 从 CloudFront 直链获取并缓存
       const cdnUrl = `https://d2lwuy8qc234o3.cloudfront.net/1/clip/${clipId}.m4a`;
-      const cdnRes = await fetch(cdnUrl);
+      const cdnRes = await fetch(cdnUrl, { method: req.method === "HEAD" ? "HEAD" : "GET" });
       if (!cdnRes.ok) {
         sendJson(res, cdnRes.status, { error: { message: `Audio file not found on Suno CDN (status ${cdnRes.status})`, type: "not_found" } });
         return;
       }
 
+      const contentLength = cdnRes.headers.get("content-length") || null;
       const filename = `suno-${clipId.slice(0, 8)}.m4a`;
+      const headers = {
+        "Content-Type": "audio/mp4",
+        "Content-Disposition": `attachment; filename="${filename}"`,
+        "Cache-Control": "public, max-age=86400"
+      };
+      if (contentLength) headers["Content-Length"] = contentLength;
+
+      if (req.method === "HEAD") {
+        res.writeHead(200, headers);
+        res.end();
+        return;
+      }
+
       const filePath = path.join(downloadsDir, filename);
       if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
 
@@ -408,12 +426,8 @@ const server = http.createServer(async (req, res) => {
       const buffer = Buffer.from(arrayBuffer);
       try { fs.writeFileSync(filePath, buffer); } catch (e) {}
 
-      res.writeHead(200, {
-        "Content-Type": "audio/mp4",
-        "Content-Length": buffer.length,
-        "Content-Disposition": `attachment; filename="${filename}"`,
-        "Cache-Control": "public, max-age=86400"
-      });
+      headers["Content-Length"] = buffer.length;
+      res.writeHead(200, headers);
       res.end(buffer);
       return;
     } catch (err) {
