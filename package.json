@@ -7,9 +7,14 @@
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File ./start-server.ps1",
     "stop": "powershell -ExecutionPolicy Bypass -File ./stop-server.ps1",
+    "autostart:enable": "powershell -ExecutionPolicy Bypass -File ./install-autostart.ps1",
+    "autostart:disable": "powershell -ExecutionPolicy Bypass -File ./uninstall-autostart.ps1",
     "sync": "powershell -ExecutionPolicy Bypass -File ./sync.ps1 -Now",
     "sync:watch": "powershell -ExecutionPolicy Bypass -File ./sync.ps1 -Daemon",
-    "test": "node ./test-api.mjs"
+    "test": "node ./test-api.mjs",
+    "test:unit": "node ./test-unit.mjs",
+    "test:mock": "node ./test-mock.mjs",
+    "test:suno": "node ./test-suno.mjs"
   },
   "keywords": [
     "chatgpt",

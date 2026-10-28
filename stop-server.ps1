@@ -1,21 +1,26 @@
-# 停止 ChatGPT OpenAI 本地 API 桥接服务
-$PORT = 8765
+# Safely stop the local Ego ChatGPT API listener without killing a shared Ego NodeService process.
+$ErrorActionPreference = "Continue"
+$port = 8765
+$uri = "http://127.0.0.1:$port/shutdown"
 
-Write-Host "正在查找占用端口 $PORT 的服务进程..." -ForegroundColor Cyan
-
-$conns = Get-NetTCPConnection -LocalPort $PORT -ErrorAction SilentlyContinue
-if ($conns) {
-    $pids = $conns.OwningProcess | Select-Object -Unique
-    foreach ($p in $pids) {
-        try {
-            $proc = Get-Process -Id $p -ErrorAction SilentlyContinue
-            if ($proc) {
-                Write-Host "正在终止进程: $($proc.ProcessName) (PID: $p)..." -ForegroundColor Yellow
-                Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
-            }
-        } catch {}
-    }
-    Write-Host "服务已成功停止！" -ForegroundColor Green
-} else {
-    Write-Host "端口 $PORT 当前未被占用，服务未运行或已停止。" -ForegroundColor Gray
+Write-Host "Requesting graceful shutdown of the Ego ChatGPT API..." -ForegroundColor Cyan
+try {
+    $response = Invoke-WebRequest -Uri $uri -Method Post -TimeoutSec 5 -UseBasicParsing
+    Write-Host "Shutdown endpoint response: HTTP $([int]$response.StatusCode)" -ForegroundColor Green
+} catch {
+    Write-Host "Graceful shutdown endpoint was unavailable: $($_.Exception.Message)" -ForegroundColor Yellow
 }
+
+$deadline = (Get-Date).AddSeconds(8)
+do {
+    Start-Sleep -Milliseconds 400
+    $listener = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if (-not $listener) {
+        Write-Host "API listener on port $port has stopped." -ForegroundColor Green
+        exit 0
+    }
+} while ((Get-Date) -lt $deadline)
+
+Write-Host "Port $port is still listening. For safety, no process was force-killed because Ego may host the listener inside a shared NodeService process." -ForegroundColor Red
+Write-Host "Inspect the project server session or restart Ego gracefully, then retry." -ForegroundColor Yellow
+exit 1

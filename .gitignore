@@ -10,3 +10,17 @@ Thumbs.db
 # Ego state & temp
 .ego-browser/
 *.tmp
+
+# Local credentials and configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+.ego-task-space-id
+.ego-suno-space-id
+*.bak*
+
+downloads/
+*.m4a
+*.mp3
