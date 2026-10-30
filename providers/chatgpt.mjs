@@ -173,11 +173,21 @@ export class ChatGPTProvider extends BaseProvider {
       try {
         this.globalTask = await taskSpaceFn(spaceId);
       } catch (spaceError) {
-        if (!process.env.EGO_TASK_SPACE_ID && /Task space does not exist/i.test(spaceError.message || "")) {
-          spaceId = "ChatGPT-Bridge-" + Date.now().toString(36);
-          fs.writeFileSync(spaceIdFile, spaceId, "utf8");
-          this.log("Saved task space is missing; created replacement: " + spaceId);
-          this.globalTask = await taskSpaceFn(spaceId);
+        if (!process.env.EGO_TASK_SPACE_ID && /Task space does not exist|belongs to the user|EPERM/i.test(spaceError.message || "")) {
+          const claimMatch = (spaceError.message || "").match(/claimTaskSpace\((\d+)\)/);
+          const claimFn = typeof claimTaskSpace !== "undefined" ? claimTaskSpace : globalThis.claimTaskSpace;
+          if (claimMatch && claimFn) {
+            try {
+              this.log(`正在恢复用户态任务空间 (id: ${claimMatch[1]})...`);
+              this.globalTask = await claimFn(Number(claimMatch[1]));
+            } catch (claimErr) {}
+          }
+          if (!this.globalTask) {
+            spaceId = "ChatGPT-Bridge-" + Date.now().toString(36);
+            fs.writeFileSync(spaceIdFile, spaceId, "utf8");
+            this.log("Saved task space reset; created replacement: " + spaceId);
+            this.globalTask = await taskSpaceFn(spaceId);
+          }
         } else {
           throw spaceError;
         }
@@ -344,6 +354,10 @@ export class ChatGPTProvider extends BaseProvider {
       if (!observerReady) this.log(`增量监听器安装失败，将降级为完整结果: ${observer?.error || "unknown"}`);
     }
 
+    const initialRegenVisible = await this.globalPage.evaluate(() =>
+      Boolean(document.querySelector('button[aria-label="重新生成回复"]'))
+    );
+
     // 步骤 D: 点击发送
     await this.globalPage.click('button[aria-label="发送"]');
     this.log("已点击发送，等待模型响应生成...");
@@ -420,7 +434,8 @@ export class ChatGPTProvider extends BaseProvider {
         hasStarted = true;
       }
 
-      if (hasStarted && !status.generating && status.regen) {
+      if ((!status.generating && status.regen && hasStarted) ||
+          (!status.generating && status.regen && !initialRegenVisible && Date.now() - startTime > 3000)) {
         this.log("模型回答生成完毕！");
         break;
       }

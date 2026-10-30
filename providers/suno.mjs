@@ -41,11 +41,21 @@ export class SunoProvider extends BaseProvider {
       try {
         this.globalTask = await taskSpaceFn(spaceId);
       } catch (spaceError) {
-        if (!process.env.EGO_SUNO_TASK_SPACE_ID && /Task space does not exist/i.test(spaceError.message || "")) {
-          spaceId = "Suno-Bridge-" + Date.now().toString(36);
-          fs.writeFileSync(spaceIdFile, spaceId, "utf8");
-          this.log("Saved task space is missing; created replacement: " + spaceId);
-          this.globalTask = await taskSpaceFn(spaceId);
+        if (!process.env.EGO_SUNO_TASK_SPACE_ID && /Task space does not exist|belongs to the user|EPERM/i.test(spaceError.message || "")) {
+          const claimMatch = (spaceError.message || "").match(/claimTaskSpace\((\d+)\)/);
+          const claimFn = typeof claimTaskSpace !== "undefined" ? claimTaskSpace : globalThis.claimTaskSpace;
+          if (claimMatch && claimFn) {
+            try {
+              this.log(`正在恢复用户态任务空间 (id: ${claimMatch[1]})...`);
+              this.globalTask = await claimFn(Number(claimMatch[1]));
+            } catch (claimErr) {}
+          }
+          if (!this.globalTask) {
+            spaceId = "Suno-Bridge-" + Date.now().toString(36);
+            fs.writeFileSync(spaceIdFile, spaceId, "utf8");
+            this.log("Saved task space reset; created replacement: " + spaceId);
+            this.globalTask = await taskSpaceFn(spaceId);
+          }
         } else {
           throw spaceError;
         }
