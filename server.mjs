@@ -75,65 +75,79 @@ async function processChatQueue() {
     if (!chatgptProvider) {
       throw new Error("ChatGPT Provider 未启用。");
     }
-    const reply = await chatgptProvider.askChatGPT(prompt);
+    let sseStarted = false;
+    let streamedText = "";
+    const writeSseDelta = (delta) => {
+      if (!stream || !delta || res.destroyed) return;
+      if (!sseStarted) {
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+          "X-Ego-Stream": "dom-mutation"
+        });
+        sseStarted = true;
+      }
+      streamedText += delta;
+      const chunk = {
+        id: "chatcmpl-stream",
+        object: "chat.completion.chunk",
+        created: Math.floor(Date.now() / 1000),
+        model: "chatgpt-plus",
+        choices: [{ index: 0, delta: { role: "assistant", content: delta }, finish_reason: null }]
+      };
+      res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+    };
+    const reply = await chatgptProvider.askChatGPT(prompt, {
+      onDelta: stream ? writeSseDelta : undefined
+    });
     const created = Math.floor(Date.now() / 1000);
     const id = "chatcmpl-" + Math.random().toString(36).substring(2, 12);
 
-    if (stream) {
-      // 标准 OpenAI SSE 流式输出
-      res.writeHead(200, {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive"
-      });
-
-      const chunkSize = 4;
-      const replyChars = Array.from(reply);
-      for (let i = 0; i < replyChars.length; i += chunkSize) {
-        const deltaContent = replyChars.slice(i, i + chunkSize).join("");
-        const chunk = {
+    if (stream && sseStarted) {
+      // 最终全页快照是权威结果。正常情况下增量文本是它的前缀，补发
+      // 监听期间尚未观察到的尾部；如果页面重写了正文，则发送显式校正事件。
+      if (reply.startsWith(streamedText)) {
+        writeSseDelta(reply.slice(streamedText.length));
+      } else if (reply !== streamedText && !res.destroyed) {
+        res.write(`event: ego_correction\ndata: ${JSON.stringify({ content: reply })}\n\n`);
+      }
+      if (!res.destroyed) {
+        const doneChunk = {
           id,
           object: "chat.completion.chunk",
           created,
           model: "chatgpt-plus",
-          choices: [{ index: 0, delta: { role: "assistant", content: deltaContent }, finish_reason: null }]
+          choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
         };
-        res.write(`data: ${JSON.stringify(chunk)}\n\n`);
-        await new Promise(r => setTimeout(r, 20));
+        res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+        res.write("data: [DONE]\n\n");
+        res.end();
       }
-
-      const doneChunk = {
-        id,
-        object: "chat.completion.chunk",
-        created,
-        model: "chatgpt-plus",
-        choices: [{ index: 0, delta: {}, finish_reason: "stop" }]
-      };
-      res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
-      res.write("data: [DONE]\n\n");
-      res.end();
-    } else {
-      const payload = {
-        id,
-        object: "chat.completion",
-        created,
-        model: "chatgpt-plus",
-        choices: [
-          {
-            index: 0,
-            message: { role: "assistant", content: reply },
-            finish_reason: "stop"
-          }
-        ],
-        usage: {
-          prompt_tokens: prompt.length,
-          completion_tokens: reply.length,
-          total_tokens: prompt.length + reply.length
-        }
-      };
-      res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
-      res.end(JSON.stringify(payload, null, 2));
+      return;
     }
+
+    // 没有拿到任何可靠的 DOM 增量时，保持协议可用，降级为一次性 JSON。
+    const payload = {
+      id,
+      object: "chat.completion",
+      created,
+      model: "chatgpt-plus",
+      choices: [
+        {
+          index: 0,
+          message: { role: "assistant", content: reply },
+          finish_reason: "stop"
+        }
+      ],
+      usage: {
+        prompt_tokens: prompt.length,
+        completion_tokens: reply.length,
+        total_tokens: prompt.length + reply.length
+      }
+    };
+    res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+    res.end(JSON.stringify(payload, null, 2));
   } catch (err) {
     log(`[EgoBridge] ChatGPT 处理异常: ${err.message}`);
     sendJson(res, 500, { error: { message: err.message, type: "server_error" } });

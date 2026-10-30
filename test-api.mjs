@@ -94,42 +94,18 @@ await test("non-stream chat completion returns expected content", async () => {
   console.log("  reply=" + JSON.stringify(content));
   assert.ok(content.includes("API测试成功"), "reply did not contain the expected marker");
 });
-await test("streaming response is valid SSE and preserves Unicode", async () => {
+await test("stream=true returns the complete Unicode response once", async () => {
   const response = await postJson({
     model: "chatgpt-plus",
     messages: [{ role: "user", content: "请只回复这几个字：流式测试成功" }],
     stream: true
   });
   assert.equal(response.status, 200);
-  assert.match(response.headers.get("content-type") || "", /text\/event-stream/i);
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let collected = "";
-  let doneToken = false;
-  while (true) {
-    const part = await reader.read();
-    buffer += decoder.decode(part.value || new Uint8Array(), { stream: !part.done });
-    let boundary;
-    while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-      const event = buffer.slice(0, boundary);
-      buffer = buffer.slice(boundary + 2);
-      for (const line of event.split(/\r?\n/)) {
-        if (!line.startsWith("data: ")) continue;
-        const payload = line.slice(6);
-        if (payload === "[DONE]") {
-          doneToken = true;
-          continue;
-        }
-        const chunk = JSON.parse(payload);
-        collected += chunk?.choices?.[0]?.delta?.content || "";
-      }
-    }
-    if (part.done) break;
-  }
-  console.log("  streamed reply=" + JSON.stringify(collected));
-  assert.equal(doneToken, true, "missing [DONE] marker");
-  assert.ok(collected.includes("流式测试成功"), "stream did not contain the expected marker");
+  assert.match(response.headers.get("content-type") || "", /application\/json/i);
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content || "";
+  console.log("  complete reply=" + JSON.stringify(content));
+  assert.ok(content.includes("流式测试成功"), "response did not contain the expected marker");
 });
 
 console.log("Summary: " + (failures === 0 ? "ALL TESTS PASSED" : failures + " TEST(S) FAILED"));

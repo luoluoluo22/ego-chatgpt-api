@@ -10,6 +10,8 @@ let currentPrompt = "";
 let navigationCount = 0;
 let statusChecks = 0;
 let domExtractionCalls = 0;
+let snapshotScope = null;
+let streamDrainCount = 0;
 
 const page = {
   label: "p1",
@@ -20,7 +22,10 @@ const page = {
   waitForSelector: async () => true,
   click: async () => true,
   close: async () => {},
-  snapshot: async () => 'button "编辑消息"\nparagraph\ntext "MOCK_REPLY"\nbutton "重新生成回答"',
+  snapshot: async (options) => {
+    snapshotScope = options?.scope || null;
+    return 'button "编辑消息"\nparagraph\ntext "MOCK_REPLY"\nbutton "重新生成回答"';
+  },
   keyboard: {
     press: async () => {},
     insertText: async (text) => { currentPrompt = text; }
@@ -28,6 +33,14 @@ const page = {
   evaluate: async (fn) => {
     const src = String(fn);
     if (src.includes("() => 1")) return 1;
+    if (src.includes("window.__egoBridgeStream =")) return { ok: true };
+    if (src.includes("window.__egoBridgeStream?.drain")) {
+      streamDrainCount++;
+      if (streamDrainCount === 1) return { ok: true, chunks: ["MOCK_REPLY_FROM_DOM"] };
+      if (streamDrainCount === 2) return { ok: true, chunks: ["\n\nSECOND_PARAGRAPH"] };
+      return { ok: true, chunks: [] };
+    }
+    if (src.includes("window.__egoBridgeStream?.stop")) return true;
     if (src.includes("cloudflare_challenge")) return false;
     if (src.includes("data-message-author-role")) {
       domExtractionCalls++;
@@ -86,6 +99,7 @@ async function readSse(response) {
   let buffer = "";
   let text = "";
   let doneToken = false;
+  let correction = null;
   while (true) {
     const part = await reader.read();
     buffer += decoder.decode(part.value || new Uint8Array(), { stream: !part.done });
@@ -93,17 +107,20 @@ async function readSse(response) {
     while ((boundary = buffer.indexOf("\n\n")) >= 0) {
       const event = buffer.slice(0, boundary);
       buffer = buffer.slice(boundary + 2);
-      for (const line of event.split(/\r?\n/)) {
+      const lines = event.split(/\r?\n/);
+      const eventName = lines.find(line => line.startsWith("event: "))?.slice(7) || "message";
+      for (const line of lines) {
         if (!line.startsWith("data: ")) continue;
         const payload = line.slice(6);
         if (payload === "[DONE]") { doneToken = true; continue; }
-        const chunk = JSON.parse(payload);
-        text += chunk?.choices?.[0]?.delta?.content || "";
+        const parsed = JSON.parse(payload);
+        if (eventName === "ego_correction") correction = parsed.content;
+        else text += parsed?.choices?.[0]?.delta?.content || "";
       }
     }
     if (part.done) break;
   }
-  return { text, doneToken };
+  return { text, doneToken, correction };
 }
 
 const deadline = Date.now() + 10000;
@@ -150,6 +167,7 @@ await test("non-stream completion prefers full assistant DOM content", async () 
   const data = await response.json();
   assert.equal(data.choices[0].message.content, expectedReply);
   assert.ok(domExtractionCalls > 0, "expected assistant DOM extraction to run");
+  assert.equal(snapshotScope, "full_page");
   assert.equal(currentPrompt, "Say mock");
 });
 
@@ -170,11 +188,13 @@ await test("conversation history is included and a fresh page navigation is requ
   assert.ok(navigationCount >= 3, "expected initialization plus a fresh conversation for each request");
 });
 
-await test("SSE output preserves the full assistant DOM content and ends with DONE", async () => {
+await test("stream=true waits for and returns the full assistant result once", async () => {
   const response = await post({ messages: [{ role: "user", content: "stream test" }], stream: true });
   assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type") || "", /text\/event-stream/i);
   const result = await readSse(response);
   assert.equal(result.text, expectedReply);
+  assert.equal(result.correction, null);
   assert.equal(result.doneToken, true);
 });
 

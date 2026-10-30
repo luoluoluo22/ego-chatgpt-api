@@ -70,7 +70,7 @@ EGO_PROVIDERS=chatgpt,suno
 - **快捷打开方式**：双击运行根目录下的 **`open-dashboard.bat`** 或运行 `npm run dashboard`。
 - **核心面板功能**：
   - **服务与各 Provider 实时健康监控**：实时查看网关、ChatGPT 网页原生会话、Suno 音乐创作会话的状态与队列排队数。
-  - **在线 API 交互测试台 (Playground)**：可视化调试问答接口，支持普通模式与 Stream SSE 流式打字机输出，实时显示响应文本与计时器。
+  - **在线 API 交互测试台 (Playground)**：可视化调试问答接口，等待网页回答完成后一次性显示完整响应与计时器。
   - **实时运行日志控制台 (Live Logs)**：支持每 3 秒自动轮询拉取 `/logs`，无需切回终端即可查看后台活动。
   - **多语言与客户端集成指引**：内置 cURL、Python、Node.js 及 NextChat / ChatBox 的一键复制示例。
 
@@ -246,7 +246,7 @@ EGO_PROVIDERS=chatgpt,suno
   "stream": false
 }
 ```
-- **请求体（流式 SSE）**：
+- **请求体（兼容 `stream` 参数）**：
 ```json
 {
   "model": "chatgpt-plus",
@@ -256,6 +256,8 @@ EGO_PROVIDERS=chatgpt,suno
   "stream": true
 }
 ```
+
+当前网页桥接需要等 ChatGPT 页面完成生成后提取完整正文，因此即使传入 `stream: true`，服务也会返回一次性的标准 JSON 完整结果，不发送伪 SSE 分片。
 
 ---
 

@@ -386,7 +386,7 @@
           <ul class="feature-list">
             <li>完整免封控：复用真实 Chromium 浏览器会话与 Cookie</li>
             <li>Sentinel 握手：自动绕过 Cloudflare 安全检测</li>
-            <li>标准输出：兼容 SSE 流式输出 (Stream) 与单次生成</li>
+            <li>标准输出：等待网页回答完成后一次性返回完整结果</li>
             <li>支持模型：chatgpt-plus, gpt-4o, gpt-4o-mini, gpt-5-6</li>
           </ul>
         </div>
@@ -426,7 +426,7 @@
           <input id="pgPrompt" type="text" class="text-input" value="请仅回复五个字：API测试成功" placeholder="输入测试提示词...">
           <label class="checkbox-label">
             <input type="checkbox" id="pgStream" checked>
-            <span>流式输出 (Stream)</span>
+            <span>等待完成后一次性返回</span>
           </label>
           <button id="sendBtn" class="btn btn-primary" onclick="sendTestRequest()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -633,40 +633,11 @@ API Key (密钥): 可选任意字符串 (本地默认免密)
           throw new Error(errData?.error?.message || ("HTTP " + res.status));
         }
 
-        if (stream) {
-          output.textContent = "";
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = "";
-
-          while (true) {
-            const { done, value } = await reader.read();
-            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-            let boundary;
-            while ((boundary = buffer.indexOf("\n\n")) >= 0) {
-              const event = buffer.slice(0, boundary);
-              buffer = buffer.slice(boundary + 2);
-              for (const line of event.split(/\r?\n/)) {
-                if (line.startsWith("data: ")) {
-                  const raw = line.slice(6);
-                  if (raw === "[DONE]") continue;
-                  try {
-                    const chunk = JSON.parse(raw);
-                    const delta = chunk?.choices?.[0]?.delta?.content || "";
-                    output.textContent += delta;
-                  } catch(e) {}
-                }
-              }
-            }
-            if (done) break;
-          }
-        } else {
-          const data = await res.json();
-          const content = data?.choices?.[0]?.message?.content || "";
-          output.textContent = content;
-          if (data?.usage) {
-            tokens.textContent = "Tokens: " + data.usage.total_tokens + " (Prompt: " + data.usage.prompt_tokens + ", Comp: " + data.usage.completion_tokens + ")";
-          }
+        const data = await res.json();
+        const content = data?.choices?.[0]?.message?.content || "";
+        output.textContent = content;
+        if (data?.usage) {
+          tokens.textContent = "Tokens: " + data.usage.total_tokens + " (Prompt: " + data.usage.prompt_tokens + ", Comp: " + data.usage.completion_tokens + ")";
         }
       } catch (err) {
         output.textContent = "请求失败: " + err.message;

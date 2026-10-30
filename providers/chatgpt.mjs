@@ -99,6 +99,7 @@ export function extractAssistantReply(snapshot, userPrompt) {
     if (!inButton && trimmed.startsWith('text "') && trimmed.endsWith('"')) {
       const val = trimmed.slice(6, -1);
       const ignore = [
+        'ChatGPT 说：', 'ChatGPT说：',
         '复制消息', '共享提示', '编辑消息', '复制', '评价回复', '朗读', '分享',
         '重新生成回复', '更多操作', '来源', 'ChatGPT 可能会出错。请核查重要信息。', '查看来源',
         '已复制代码', '代码', '滚动到底部', '询问 ChatGPT', '正在思考', '思考过程'
@@ -118,10 +119,15 @@ export function extractAssistantReply(snapshot, userPrompt) {
 export function normalizeAssistantText(value, userPrompt = "") {
   let text = String(value || "").replace(/\r\n/g, "\n").replace(/\u00a0/g, " ").trim();
   if (!text || (userPrompt && text === String(userPrompt).trim())) return "";
+  text = text.replace(/^(?:ChatGPT\s*说：|ChatGPT\s*说:)\s*/u, "");
+  // Accessibility snapshots may flatten adjacent text nodes from separate
+  // rendered lines. Restore the common numbered-line boundary without
+  // changing ordinary prose paragraphs.
+  text = text.replace(/([^\n])(第\d+行：)/gu, "$1\n$2");
   text = text.replace(/\n{3,}/g, "\n\n");
   const lines = text.split("\n");
   const ignored = new Set([
-    "复制消息", "共享提示", "编辑消息", "复制", "评价回复", "朗读", "分享",
+    "ChatGPT 说：", "ChatGPT说：", "复制消息", "共享提示", "编辑消息", "复制", "评价回复", "朗读", "分享",
     "重新生成回复", "重新生成回答", "更多操作", "来源", "查看来源",
     "已复制代码", "代码", "滚动到底部", "询问 ChatGPT", "正在思考", "思考过程"
   ]);
@@ -213,7 +219,92 @@ export class ChatGPTProvider extends BaseProvider {
     }
   }
 
-  async askChatGPT(prompt) {
+  async installStreamObserver() {
+    return this.globalPage.evaluate(() => {
+      try {
+        const state = {
+          active: true,
+          lastText: "",
+          queue: [],
+          error: null,
+          observer: null
+        };
+        const clean = (value) => String(value || "")
+          .replace(/^ChatGPT\s*说：\s*/u, "")
+          .replace(/^ChatGPT\s*说:\s*/u, "")
+          .trim();
+        const readAssistantText = () => {
+          const selectors = [
+            '[data-message-author-role="assistant"]',
+            '.markdown',
+            '[data-message-content]',
+            '[data-testid*="message-content"]'
+          ];
+          for (const selector of selectors) {
+            const nodes = Array.from(document.querySelectorAll(selector));
+            if (!nodes.length) continue;
+            const node = nodes[nodes.length - 1];
+            const text = clean(node.innerText || node.textContent || "");
+            if (text) return text;
+          }
+          return "";
+        };
+        const capture = () => {
+          if (!state.active) return;
+          const text = readAssistantText();
+          if (!text || text === state.lastText) return;
+          if (state.lastText && !text.startsWith(state.lastText)) {
+            state.error = "assistant text was rewritten instead of appended";
+            state.active = false;
+            return;
+          }
+          const delta = text.slice(state.lastText.length);
+          state.lastText = text;
+          if (delta) state.queue.push(delta);
+        };
+        state.observer = new MutationObserver(capture);
+        state.observer.observe(document.body, { subtree: true, childList: true, characterData: true });
+        capture();
+        window.__egoBridgeStream = {
+          drain() {
+            const chunks = state.queue.splice(0);
+            return { ok: !state.error, error: state.error, chunks, text: state.lastText };
+          },
+          stop() {
+            state.active = false;
+            try { state.observer?.disconnect(); } catch {}
+            if (window.__egoBridgeStream) delete window.__egoBridgeStream;
+          }
+        };
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error) };
+      }
+    });
+  }
+
+  async drainStreamObserver(onDelta) {
+    const result = await this.globalPage.evaluate(() => {
+      try {
+        return window.__egoBridgeStream?.drain?.() || { ok: false, error: "stream observer unavailable", chunks: [] };
+      } catch (error) {
+        return { ok: false, error: error?.message || String(error), chunks: [] };
+      }
+    });
+    if (!result?.ok) return result || { ok: false, error: "stream observer unavailable", chunks: [] };
+    for (const chunk of result.chunks || []) {
+      if (chunk) await onDelta(String(chunk));
+    }
+    return result;
+  }
+
+  async stopStreamObserver() {
+    try {
+      await this.globalPage.evaluate(() => window.__egoBridgeStream?.stop?.());
+    } catch {}
+  }
+
+  async askChatGPT(prompt, options = {}) {
     await this.ensureReady();
 
     this.log("正在打开新的 ChatGPT 对话...");
@@ -244,6 +335,15 @@ export class ChatGPTProvider extends BaseProvider {
       await this.globalPage.waitForTimeout(300);
     }
 
+    // 在发送前安装增量监听器；如果当前页面没有可观察的 DOM，调用方会
+    // 在生成结束后自动降级为一次性完整 JSON。
+    let observerReady = false;
+    if (typeof options.onDelta === "function") {
+      const observer = await this.installStreamObserver();
+      observerReady = Boolean(observer?.ok);
+      if (!observerReady) this.log(`增量监听器安装失败，将降级为完整结果: ${observer?.error || "unknown"}`);
+    }
+
     // 步骤 D: 点击发送
     await this.globalPage.click('button[aria-label="发送"]');
     this.log("已点击发送，等待模型响应生成...");
@@ -253,8 +353,23 @@ export class ChatGPTProvider extends BaseProvider {
     let hasStarted = false;
     let hasAuthorizedTool = false;
 
+    let lastObserverError = null;
+    let lastMaintenanceAt = 0;
     while (Date.now() - startTime < 120000) {
-      await this.globalPage.waitForTimeout(1000);
+      await this.globalPage.waitForTimeout(observerReady ? 200 : 1000);
+
+      if (observerReady && typeof options.onDelta === "function") {
+        const streamState = await this.drainStreamObserver(options.onDelta);
+        if (!streamState?.ok) {
+          lastObserverError = streamState?.error || "stream observer failed";
+          observerReady = false;
+          this.log(`增量监听器失效，将使用最终完整快照: ${lastObserverError}`);
+        }
+      }
+
+      // Cloudflare 和授权按钮不需要每 200ms 检查一次。
+      if (Date.now() - lastMaintenanceAt < 800) continue;
+      lastMaintenanceAt = Date.now();
 
       // 1. 自动处理 Cloudflare Challenge
       const isCf = await this.globalPage.evaluate(() => {
@@ -311,10 +426,17 @@ export class ChatGPTProvider extends BaseProvider {
       }
     }
 
+    if (observerReady && typeof options.onDelta === "function") {
+      const streamState = await this.drainStreamObserver(options.onDelta);
+      if (!streamState?.ok) lastObserverError = streamState?.error || "stream observer failed";
+    }
+    await this.stopStreamObserver();
     await this.globalPage.waitForTimeout(1200);
 
     // 步骤 F: 优先从最后一条 assistant 消息 DOM 提取正文
-    const snap = await this.globalPage.snapshot();
+    // 默认 snapshot 只覆盖当前视口；长回复会被截断在首屏。完整快照才能
+    // 覆盖滚动区域中的全部 assistant 内容。
+    const snap = await this.globalPage.snapshot({ scope: "full_page" });
     const snapshotReply = normalizeAssistantText(extractAssistantReply(snap, prompt), prompt);
     let domDiagnostics = { assistantCount: 0, source: "none", chars: 0, text: "" };
     try {
@@ -375,6 +497,7 @@ export class ChatGPTProvider extends BaseProvider {
 
     this.log(`回答提取完成: source=${extractionSource}, assistantNodes=${domDiagnostics.assistantCount}, domChars=${domDiagnostics.chars}, snapshotChars=${snap.length}, snapshotReplyChars=${snapshotReply.length}, replyChars=${replyText.length}`);
     if (!replyText) this.log("回答提取结果为空。");
+    if (lastObserverError) this.log(`增量监听最终状态: ${lastObserverError}`);
     return replyText || "（未能提取到回复，请重试）";
   }
 
