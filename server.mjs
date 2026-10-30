@@ -236,8 +236,23 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // 2. 健康检查
-  if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
+  // 2. 健康检查与管理面板
+  if (req.method === "GET" && (url.pathname === "/dashboard" || url.pathname === "/dashboard.html" || url.pathname === "/health" || url.pathname === "/")) {
+    const isHtml = url.pathname === "/dashboard" || url.pathname === "/dashboard.html" || (url.pathname === "/" && (req.headers.accept || "").includes("text/html"));
+    if (isHtml) {
+      try {
+        const dashboardPath = path.join(__dirname, "dashboard.html");
+        if (fs.existsSync(dashboardPath)) {
+          const html = fs.readFileSync(dashboardPath, "utf8");
+          res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+          res.end(html);
+          return;
+        }
+      } catch (e) {
+        log(`[Dashboard] 读取面板文件失败: ${e.message}`);
+      }
+    }
+
     const providerHealth = {};
     let allReady = true;
     let anyError = null;
@@ -376,14 +391,18 @@ const server = http.createServer(async (req, res) => {
       let matchedFile = null;
       if (fs.existsSync(downloadsDir)) {
         const files = fs.readdirSync(downloadsDir);
-        matchedFile = files.find(f => f.includes(clipId.slice(0, 8)));
+        const shortId = clipId.slice(0, 8);
+        matchedFile = files.find(f => f.includes(shortId) && f.endsWith(".mp3"))
+          || files.find(f => f.includes(shortId) && f.endsWith(".m4a"))
+          || files.find(f => f.includes(shortId));
       }
 
       if (matchedFile) {
         const filePath = path.join(downloadsDir, matchedFile);
         const stat = fs.statSync(filePath);
+        const contentType = matchedFile.endsWith(".mp3") ? "audio/mpeg" : "audio/mp4";
         res.writeHead(200, {
-          "Content-Type": "audio/mp4",
+          "Content-Type": contentType,
           "Content-Length": stat.size,
           "Content-Disposition": `attachment; filename="${encodeURIComponent(matchedFile)}"`,
           "Cache-Control": "public, max-age=86400"
@@ -396,7 +415,33 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
-      // 从 CloudFront 直链获取并缓存
+      // 若本地未缓存，通过 sunoProvider 提取解密音频
+      if (sunoProvider) {
+        try {
+          const downloadedPath = await sunoProvider.downloadAudioFile(clipId);
+          if (downloadedPath && fs.existsSync(downloadedPath)) {
+            const stat = fs.statSync(downloadedPath);
+            const baseName = path.basename(downloadedPath);
+            const contentType = baseName.endsWith(".mp3") ? "audio/mpeg" : "audio/mp4";
+            res.writeHead(200, {
+              "Content-Type": contentType,
+              "Content-Length": stat.size,
+              "Content-Disposition": `attachment; filename="${encodeURIComponent(baseName)}"`,
+              "Cache-Control": "public, max-age=86400"
+            });
+            if (req.method === "HEAD") {
+              res.end();
+              return;
+            }
+            fs.createReadStream(downloadedPath).pipe(res);
+            return;
+          }
+        } catch (downloadErr) {
+          log(`[EgoBridge] 提取解密音频异常 (${clipId}): ${downloadErr.message}`);
+        }
+      }
+
+      // 后备：直接从 CloudFront 直链获取
       const cdnUrl = `https://d2lwuy8qc234o3.cloudfront.net/1/clip/${clipId}.m4a`;
       const cdnRes = await fetch(cdnUrl, { method: req.method === "HEAD" ? "HEAD" : "GET" });
       if (!cdnRes.ok) {
@@ -514,6 +559,17 @@ if (process.env.EGO_API_TEST_MODE !== "1") {
   server.listen(PORT, "127.0.0.1", async () => {
     log("[EgoBridge] API 服务器已在 http://127.0.0.1:" + PORT + " 启动，正在初始化启用的服务提供者...");
     if (!API_KEY) log("[Security] EGO_API_KEY 未设置：当前仍允许本机客户端无令牌访问；请在需要多用户或隧道访问时配置 API Key。");
+
+    // 自动在默认浏览器中打开管理状态面板（可通过 EGO_AUTO_OPEN_DASHBOARD=0 禁用）
+    if (process.env.EGO_AUTO_OPEN_DASHBOARD !== "0") {
+      try {
+        const { exec } = await import("node:child_process");
+        exec(`start http://127.0.0.1:${PORT}/`);
+        log(`[EgoBridge] 已自动打开管理状态页面: http://127.0.0.1:${PORT}/`);
+      } catch (err) {
+        log(`[EgoBridge] 自动打开管理页面失败: ${err.message}`);
+      }
+    }
 
     for (const [name, p] of Object.entries(providers)) {
       log(`[EgoBridge] 正在初始化 Provider: ${name} ...`);

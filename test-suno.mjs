@@ -261,7 +261,7 @@ await test("POST /v1/suno/generate rejects empty prompt", async () => {
 await test("GET /v1/suno/download serves existing cached audio file", async () => {
   const res = await fetch(`${base}/v1/suno/download/281a067d-82e5-4ff2-86e8-88504a9a748b`, { headers });
   assert.equal(res.status, 200);
-  assert.equal(res.headers.get("content-type"), "audio/mp4");
+  assert.match(res.headers.get("content-type"), /^audio\/(mpeg|mp4)$/);
   assert.match(res.headers.get("content-disposition") || "", /attachment;/);
   const blob = await res.arrayBuffer();
   assert.ok(blob.byteLength > 1000);

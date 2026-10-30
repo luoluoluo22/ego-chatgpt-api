@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { execSync } from "node:child_process";
 import { BaseProvider } from "./base.mjs";
 
 export function normalizeSunoModel(model) {
@@ -249,6 +250,90 @@ export class SunoProvider extends BaseProvider {
   }
 
   /**
+   * 通过页面播放器 MediaSource 管道抓取已解密的完整音频流
+   */
+  async captureAudioFromPage(clipId, destDir = null, title = "") {
+    await this.ensureReady();
+    const dir = destDir || path.join(this.rootDir, "downloads");
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+    const cleanTitle = (title || "suno-song").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
+    const m4aPath = path.join(dir, `${cleanTitle}-${clipId.slice(0, 8)}.m4a`);
+    const mp3Path = path.join(dir, `${cleanTitle}-${clipId.slice(0, 8)}.mp3`);
+
+    // 检查本地是否已有有效的 mp3 或 m4a
+    if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1024) {
+      return mp3Path;
+    }
+    if (fs.existsSync(m4aPath) && fs.statSync(m4aPath).size > 1024) {
+      try {
+        const header = fs.readFileSync(m4aPath).slice(4, 8).toString("utf8");
+        if (header === "ftyp") return m4aPath;
+      } catch (e) {}
+    }
+
+    this.log(`正在通过浏览器提取已解密音频流 (${clipId})...`);
+    const songUrl = `https://suno.com/song/${clipId}`;
+    await this.globalPage.goto(songUrl, { waitUntil: "domcontentloaded", timeout: 45000 });
+    await this.globalPage.waitForTimeout(3000);
+
+    // 注入 MediaSource 管道监听器
+    await this.globalPage.evaluate(() => {
+      window.__audioChunks = [];
+      if (window.MediaSource) {
+        const origAddSourceBuffer = MediaSource.prototype.addSourceBuffer;
+        MediaSource.prototype.addSourceBuffer = function(mimeType) {
+          const sb = origAddSourceBuffer.apply(this, arguments);
+          const origAppend = sb.appendBuffer;
+          sb.appendBuffer = function(buf) {
+            if (buf) {
+              const u8 = new Uint8Array(buf instanceof ArrayBuffer ? buf : buf.buffer, buf.byteOffset || 0, buf.byteLength);
+              window.__audioChunks.push(Array.from(u8));
+            }
+            return origAppend.apply(this, arguments);
+          };
+          return sb;
+        };
+      }
+    });
+
+    // 触发播放
+    await this.globalPage.evaluate(() => {
+      const btn = document.querySelector('button[aria-label*="播放" i], button[aria-label*="Play" i]');
+      if (btn) btn.click();
+    });
+
+    // 轮询等待音频分块缓冲完成
+    let chunks = [];
+    for (let i = 0; i < 15; i++) {
+      await this.globalPage.waitForTimeout(1000);
+      chunks = await this.globalPage.evaluate(() => window.__audioChunks || []);
+      if (chunks.length >= 10) break;
+    }
+
+    if (!Array.isArray(chunks) || chunks.length === 0) {
+      throw new Error("未能从播放器抓取到有效音频分块");
+    }
+
+    const merged = Buffer.concat(chunks.map(c => Buffer.from(c)));
+    fs.writeFileSync(m4aPath, merged);
+    this.log(`解密音频提取成功: ${m4aPath} (${merged.length} 字节)`);
+
+    // 尝试转码为通用 MP3
+    try {
+      execSync(`ffmpeg.exe -y -i "${m4aPath}" -c:a libmp3lame -q:a 2 "${mp3Path}"`, { stdio: "ignore" });
+      if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1024) {
+        this.log(`已成功转码为通用 MP3: ${mp3Path} (${fs.statSync(mp3Path).size} 字节)`);
+        return mp3Path;
+      }
+    } catch (e) {
+      this.log(`FFmpeg 转码略过: ${e.message}`);
+    }
+
+    return m4aPath;
+  }
+
+  /**
    * 下载音频文件到本地目录
    */
   async downloadAudioFile(clipId, destDir = null, title = "") {
@@ -256,23 +341,39 @@ export class SunoProvider extends BaseProvider {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     const cleanTitle = (title || "suno-song").replace(/[\\/:*?"<>|]/g, "_").slice(0, 30);
-    const filename = `${cleanTitle}-${clipId.slice(0, 8)}.m4a`;
-    const filePath = path.join(dir, filename);
+    const m4aPath = path.join(dir, `${cleanTitle}-${clipId.slice(0, 8)}.m4a`);
+    const mp3Path = path.join(dir, `${cleanTitle}-${clipId.slice(0, 8)}.mp3`);
 
-    if (fs.existsSync(filePath) && fs.statSync(filePath).size > 1024) {
-      this.log(`本地已存在音频文件: ${filePath} (${fs.statSync(filePath).size} 字节)`);
-      return filePath;
+    // 若本地已有 MP3 或有效 M4A，直接返回
+    if (fs.existsSync(mp3Path) && fs.statSync(mp3Path).size > 1024) {
+      return mp3Path;
+    }
+    if (fs.existsSync(m4aPath) && fs.statSync(m4aPath).size > 1024) {
+      try {
+        const header = fs.readFileSync(m4aPath).slice(4, 8).toString("utf8");
+        if (header === "ftyp") return m4aPath;
+      } catch (e) {}
     }
 
+    // 优先通过浏览器抓取已解密真实音频流
+    if (this.globalPage && typeof this.globalPage.evaluate === "function") {
+      try {
+        return await this.captureAudioFromPage(clipId, dir, title);
+      } catch (err) {
+        this.log(`浏览器提取音频失败 (${err.message})，尝试后备方案...`);
+      }
+    }
+
+    // 后备：直接从 CloudFront 下载
     const cdnUrl = `https://d2lwuy8qc234o3.cloudfront.net/1/clip/${clipId}.m4a`;
     const res = await fetch(cdnUrl);
     if (!res.ok) {
       throw new Error(`CloudFront 下载失败 HTTP ${res.status}`);
     }
     const arrayBuffer = await res.arrayBuffer();
-    fs.writeFileSync(filePath, Buffer.from(arrayBuffer));
-    this.log(`音频文件下载成功: ${filePath} (${fs.statSync(filePath).size} 字节)`);
-    return filePath;
+    fs.writeFileSync(m4aPath, Buffer.from(arrayBuffer));
+    this.log(`音频文件下载成功: ${m4aPath} (${fs.statSync(m4aPath).size} 字节)`);
+    return m4aPath;
   }
 
   /**

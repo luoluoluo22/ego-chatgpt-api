@@ -1,4 +1,4 @@
-# Optional local settings. Keep .env out of Git and never share it.
+﻿# Optional local settings. Keep .env out of Git and never share it.
 $envFile = Join-Path $PSScriptRoot ".env"
 if (Test-Path -LiteralPath $envFile) {
     Get-Content -LiteralPath $envFile -Encoding UTF8 | ForEach-Object {
@@ -15,7 +15,7 @@ if (Test-Path -LiteralPath $envFile) {
         }
     }
 }
-# 启动 ChatGPT OpenAI 本地 API 桥接服务
+# Start Ego ChatGPT API Service
 $ErrorActionPreference = "Stop"
 
 $port = if ($env:EGO_API_PORT) { [int]$env:EGO_API_PORT } else { 8765 }
@@ -23,14 +23,16 @@ $existing = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Sil
 if ($existing) {
     Write-Host "==========================================" -ForegroundColor Yellow
     Write-Host " Ego ChatGPT API listener is already running on port $port." -ForegroundColor Yellow
-    Write-Host " No need to start another instance." -ForegroundColor Yellow
+    Write-Host " Opening management dashboard: http://127.0.0.1:$port ..." -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Yellow
+    Start-Process "http://127.0.0.1:$port"
     exit 0
 }
 
 Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host " 启动 ChatGPT OpenAI 本地 API 桥接服务 " -ForegroundColor Cyan
-Write-Host " 监听端口: $port (http://127.0.0.1:$port)   " -ForegroundColor Cyan
+Write-Host " Starting ChatGPT OpenAI Local API Bridge" -ForegroundColor Cyan
+Write-Host " Listening on port: $port (http://127.0.0.1:$port)" -ForegroundColor Cyan
+Write-Host " Management Dashboard: http://127.0.0.1:$port/" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Cyan
 
 $serverScript = "file:///" + (Join-Path $PSScriptRoot "server.mjs").Replace("\", "/")

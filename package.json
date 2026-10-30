@@ -7,6 +7,7 @@
   "scripts": {
     "start": "powershell -ExecutionPolicy Bypass -File ./start-server.ps1",
     "stop": "powershell -ExecutionPolicy Bypass -File ./stop-server.ps1",
+    "dashboard": "powershell -ExecutionPolicy Bypass -Command \"Start-Process 'http://127.0.0.1:8765/'\"",
     "autostart:enable": "powershell -ExecutionPolicy Bypass -File ./install-autostart.ps1",
     "autostart:disable": "powershell -ExecutionPolicy Bypass -File ./uninstall-autostart.ps1",
     "sync": "powershell -ExecutionPolicy Bypass -File ./sync.ps1 -Now",
